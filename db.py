@@ -355,3 +355,29 @@ def get_game_summary() -> dict:
         "news_count":      news_cnt,
         "active_students": active,
     }
+
+
+def grant_emergency_fund(student_id: int, amount: float, day: int, reason: str = "긴급 지원금"):
+    """교사가 파산 위기 학생에게 긴급 지원금을 지급합니다."""
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN")
+        conn.execute(
+            "UPDATE students SET cash = cash + ? WHERE student_id=?",
+            (amount, student_id)
+        )
+        conn.execute(
+            """
+            INSERT INTO transactions
+                (student_id, asset_type, tx_type, quantity, price, reason, day)
+            VALUES (?, 'emergency', 'buy', 1, ?, ?, ?)
+            """,
+            (student_id, amount, reason, day)
+        )
+        conn.commit()
+        conn.close()
+        return True, f"{student_id}번 학생에게 {int(amount):,}원 긴급 지원금을 지급했습니다."
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return False, str(e)
