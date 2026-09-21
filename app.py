@@ -571,7 +571,7 @@ if selected_user == "교사 관리자" and st.session_state["teacher_auth"]:
     companies_df  = get_companies()
     alt_assets_df = get_alt_assets()
 
-    tab_news, tab_price, tab_rank, tab_pw, tab_reset = st.tabs([
+    tab_news, tab_price, tab_rank, tab_emergency, tab_pw, tab_reset = st.tabs([
         "📰 뉴스 작성",
         "💹 시세 & 하루 경과",
         "🏆 순위 & 거래 내역",
