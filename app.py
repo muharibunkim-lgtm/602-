@@ -13,6 +13,7 @@ from db import (
     get_all_passwords,
     reset_game,
     get_game_summary,
+    grant_emergency_fund,
     NUM_STUDENTS,
     INITIAL_CASH,
     INITIAL_GOLD_PRICE,
@@ -510,18 +511,34 @@ for key, val in [
 st.sidebar.title("💰 어린이 경제 교실")
 st.sidebar.markdown("---")
 
-user_options = [f"학생 {i}번" for i in range(1, NUM_STUDENTS + 1)]
-user_options.append("교사 관리자")
+# ✅ 문제1 해결: 로그인 유지한 채 최신 정보만 다시 불러오기
+if st.sidebar.button("🔄 최신 정보 새로고침", use_container_width=True):
+    st.rerun()
 
-selected_user = st.sidebar.selectbox("👤 접속할 계정을 선택하세요", user_options)
+st.sidebar.markdown("---")
+
+# ✅ 문제2 해결: 학생/교사 로그인 화면 명확히 분리
+role = st.sidebar.radio(
+    "👤 로그인 유형을 선택하세요",
+    options=["🧑‍🎓 학생 로그인", "🧑‍🏫 교사 관리자"],
+    key="role_select"
+)
+
+if role == "🧑‍🎓 학생 로그인":
+    st.sidebar.markdown("#### 학생 번호를 선택하세요")
+    student_num = st.sidebar.selectbox(
+        "학생 번호",
+        options=list(range(1, NUM_STUDENTS + 1)),
+        format_func=lambda x: f"{x}번",
+        key="student_select",
+        label_visibility="collapsed"
+    )
+    selected_user = f"학생 {student_num}번"
+else:
+    selected_user = "교사 관리자"
+
 day = get_current_day()
 st.sidebar.markdown(f"---\n📅 **현재 거래일: {day}일차**")
-
-if selected_user != "교사 관리자":
-    sel_id = int(selected_user.replace("학생 ", "").replace("번", ""))
-    if st.session_state["logged_student_id"] != sel_id:
-        st.session_state["student_logged_in"] = False
-        st.session_state["logged_student_id"] = None
 
 
 # ══════════════════════════════════════════════════════════════
@@ -558,6 +575,7 @@ if selected_user == "교사 관리자" and st.session_state["teacher_auth"]:
         "📰 뉴스 작성",
         "💹 시세 & 하루 경과",
         "🏆 순위 & 거래 내역",
+        "🚨 긴급 지원",
         "🔑 비밀번호 관리",
         "🔄 게임 초기화",
     ])
@@ -816,6 +834,66 @@ if selected_user == "교사 관리자" and st.session_state["teacher_auth"]:
             if student_filter:
                 all_tx = all_tx[all_tx["학생번호"].isin(student_filter)]
             st.dataframe(all_tx, use_container_width=True, hide_index=True)
+
+
+        # ── [탭] 긴급 지원 ───────────────────────────────────────
+    with tab_emergency:
+        st.subheader("🚨 파산 위기 학생 긴급 지원금 지급")
+        st.info("💡 현금이 부족하거나 총자산이 낮은 학생에게 긴급 지원금을 지급할 수 있어요.")
+
+        threshold = st.number_input(
+            "⚠️ 파산 위험 기준 총자산(원)",
+            min_value=0, max_value=1000000,
+            value=50000, step=10000,
+            help="이 금액 이하인 학생을 파산 위험으로 표시합니다."
+        )
+
+        risk_data = []
+        for sid in range(1, NUM_STUDENTS + 1):
+            a = calc_total_assets(sid)
+            risk_data.append({
+                "학생번호":   sid,
+                "현금(원)":   int(a["cash"]),
+                "총자산(원)": int(a["total"]),
+                "파산위험":   "🚨 위험" if a["total"] <= threshold else "✅ 정상",
+            })
+        risk_df = pd.DataFrame(risk_data).sort_values("총자산(원)").reset_index(drop=True)
+
+        def highlight_risk(row):
+            color = "background-color: #ffe0e0" if row["파산위험"] == "🚨 위험" else ""
+            return [color] * len(row)
+
+        st.dataframe(
+            risk_df.style.apply(highlight_risk, axis=1),
+            use_container_width=True, hide_index=True
+        )
+
+        st.markdown("---")
+        st.markdown("### 💵 긴급 지원금 지급")
+
+        ec1, ec2, ec3 = st.columns(3)
+        with ec1:
+            target_sid = st.selectbox(
+                "지원 대상 학생",
+                options=list(range(1, NUM_STUDENTS + 1)),
+                format_func=lambda x: f"{x}번",
+                key="emergency_target"
+            )
+        with ec2:
+            emergency_amount = st.number_input(
+                "지급 금액(원)", min_value=10000, max_value=1000000,
+                value=100000, step=10000, key="emergency_amount"
+            )
+        with ec3:
+            emergency_reason = st.text_input(
+                "지급 사유", value="파산 긴급 지원금", key="emergency_reason"
+            )
+
+        if st.button("💸 긴급 지원금 지급", type="primary", key="btn_emergency"):
+            ok, msg = grant_emergency_fund(target_sid, emergency_amount, day, emergency_reason)
+            st.success(f"🎉 {msg}") if ok else st.error(msg)
+            if ok:
+                st.rerun()
 
     # ── [탭4] 비밀번호 관리 ─────────────────────────────────
     with tab_pw:
