@@ -24,31 +24,15 @@ DEFAULT_PASSWORD = "0000"
 
 
 def get_connection():
-    turso_url = None
-    turso_token = None
-
-    try:
-        import streamlit as st
-        turso_url = st.secrets.get("TURSO_DATABASE_URL")
-        turso_token = st.secrets.get("TURSO_AUTH_TOKEN")
-    except Exception:
-        pass
-
-    if not turso_url:
-        turso_url = os.environ.get("TURSO_DATABASE_URL")
-        turso_token = os.environ.get("TURSO_AUTH_TOKEN")
-
-    if turso_url and turso_token:
-        import libsql
-        conn = libsql.connect(database=turso_url, auth_token=turso_token)
-    else:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-
-    try:
-        conn.row_factory = sqlite3.Row
-    except Exception:
-        pass
-
+    """
+    로컬 SQLite 전용 연결 함수.
+    - WAL 모드: 한 명이 쓰는 동안에도 다른 사람이 읽을 수 있게 해줌
+    - busy_timeout: 락이 걸려도 즉시 에러 대신 최대 8초 대기 후 재시도
+    """
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=8000")
     return conn
 
 
