@@ -27,7 +27,7 @@ st.set_page_config(
 )
 init_db()
 
-TEACHER_PASSWORD = "1234"
+TEACHER_PASSWORD = "a1111"
 
 
 # ══════════════════════════════════════════════════════════════
