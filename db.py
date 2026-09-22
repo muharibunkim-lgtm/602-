@@ -159,6 +159,27 @@ def init_db():
         )
     """)
 
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS price_history (
+            history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            day        INTEGER NOT NULL,
+            asset_type TEXT    NOT NULL,
+            company_id INTEGER,
+            asset_key  TEXT    NOT NULL,
+            price      REAL    NOT NULL
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS asset_snapshot (
+            snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            day         INTEGER NOT NULL,
+            student_id  INTEGER NOT NULL,
+            total_value REAL    NOT NULL,
+            UNIQUE (day, student_id)
+        )
+    """)
+    
     # 초기 데이터 삽입 (숫자 인덱스 [0]으로 수정됨)
     c.execute("SELECT COUNT(*) FROM companies")
     if c.fetchone()[0] == 0:
@@ -200,6 +221,27 @@ def init_db():
                 (i, INITIAL_CASH, DEFAULT_PASSWORD)
             )
 
+    # 1일차 최초 가격을 이력에 기록 (그래프 시작점)
+    c.execute("SELECT COUNT(*) as cnt FROM price_history")
+    if c.fetchone()["cnt"] == 0:
+        for name, sector, price in INITIAL_COMPANIES:
+            row = c.execute(
+                "SELECT company_id FROM companies WHERE name=? AND sector=?", (name, sector)
+            ).fetchone()
+            c.execute(
+                "INSERT INTO price_history (day,asset_type,company_id,asset_key,price) VALUES (1,'stock',?,?,?)",
+                (row["company_id"], name, price)
+            )
+        c.execute(
+            "INSERT INTO price_history (day,asset_type,company_id,asset_key,price) VALUES (1,'gold',NULL,'gold',?)",
+            (INITIAL_GOLD_PRICE,)
+        )
+        c.execute(
+            "INSERT INTO price_history (day,asset_type,company_id,asset_key,price) VALUES (1,'bitcoin',NULL,'bitcoin',?)",
+            (INITIAL_BTC_PRICE,)
+        )
+
+    
     conn.commit()
     conn.close()
 
@@ -364,3 +406,59 @@ def grant_emergency_fund(student_id: int, amount: float, day: int, reason: str =
         conn.rollback()
         conn.close()
         return False, str(e)
+
+
+def log_price_history(day: int):
+    """현재 시세를 이력 테이블에 기록합니다. (하루 경과 시 호출)"""
+    conn = get_connection()
+    companies = conn.execute("SELECT company_id, name, current_price FROM companies").fetchall()
+    for row in companies:
+        conn.execute(
+            "INSERT INTO price_history (day,asset_type,company_id,asset_key,price) VALUES (?,?,?,?,?)",
+            (day, "stock", row["company_id"], row["name"], row["current_price"])
+        )
+    alts = conn.execute("SELECT asset_type, current_price FROM alt_assets").fetchall()
+    for row in alts:
+        conn.execute(
+            "INSERT INTO price_history (day,asset_type,company_id,asset_key,price) VALUES (?,?,NULL,?,?)",
+            (day, row["asset_type"], row["asset_type"], row["current_price"])
+        )
+    conn.commit()
+    conn.close()
+
+
+def get_price_history(asset_key: str) -> pd.DataFrame:
+    """특정 기업명 또는 자산(gold/bitcoin)의 날짜별 가격 이력을 가져옵니다."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT day, price FROM price_history WHERE asset_key=? ORDER BY day",
+        (asset_key,)
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return pd.DataFrame(rows, columns=["day", "price"]) if rows else pd.DataFrame(columns=["day", "price"])
+
+
+def record_student_snapshot(day: int, student_id: int, total_value: float):
+    """학생의 특정 일자 총자산을 기록합니다. (하루 경과 시 호출)"""
+    conn = get_connection()
+    conn.execute(
+        "INSERT OR REPLACE INTO asset_snapshot (day,student_id,total_value) VALUES (?,?,?)",
+        (day, student_id, total_value)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_student_snapshot_history(student_id: int) -> pd.DataFrame:
+    """학생의 날짜별 총자산 변화 이력을 가져옵니다."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT day, total_value FROM asset_snapshot WHERE student_id=? ORDER BY day",
+        (student_id,)
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return pd.DataFrame(rows, columns=["day", "total_value"]) if rows else pd.DataFrame(columns=["day", "total_value"])
