@@ -14,6 +14,10 @@ from db import (
     reset_game,
     get_game_summary,
     grant_emergency_fund,
+    log_price_history, 
+    get_price_history,
+    record_student_snapshot, 
+    get_student_snapshot_history,
     NUM_STUDENTS,
     INITIAL_CASH,
     INITIAL_GOLD_PRICE,
@@ -630,6 +634,18 @@ if selected_user == "교사 관리자" and st.session_state["teacher_auth"]:
                     st.rerun()
 
     # ── [탭2] 시세 & 하루 경과 ──────────────────────────────
+    with st.expander("📊 지금까지의 전체 시세 변화 보기"):
+            chart_target = st.selectbox(
+                "자산 선택",
+                options=[row["name"] for _, row in companies_df.iterrows()] + ["gold", "bitcoin"],
+                format_func=lambda x: {"gold": "🥇 금", "bitcoin": "₿ 비트코인"}.get(x, x),
+                key="teacher_chart_target"
+            )
+            t_hist = get_price_history(chart_target)
+            if not t_hist.empty:
+                st.line_chart(t_hist.rename(columns={"day": "거래일", "price": "가격"}).set_index("거래일"))
+
+    
     with tab_price:
         st.subheader("💹 시세 변동 설정 및 하루 경과")
 
@@ -747,9 +763,18 @@ if selected_user == "교사 관리자" and st.session_state["teacher_auth"]:
                 set_setting("inflation_rate", str(new_inflation_rate))
 
                 apply_daily_events(day)
+                new_day = day + 1
                 set_setting("day", str(day + 1))
 
-                st.success(f"✅ {day + 1}일차로 넘어갔습니다!")
+                # ✅ 새로운 시세를 이력에 기록 (그래프용)
+                log_price_history(new_day)
+
+                # ✅ 전체 학생의 오늘자 총자산 스냅샷 기록 (그래프용)
+                for sid in range(1, NUM_STUDENTS + 1):
+                    snap_total = calc_total_assets(sid)["total"]
+                    record_student_snapshot(new_day, sid, snap_total)
+
+                st.success(f"✅ {new_day}일차로 넘어갔습니다!")
                 st.rerun()
 
             except Exception as e:
@@ -1077,8 +1102,9 @@ elif selected_user != "교사 관리자":
 
     st.markdown("---")
 
-    tab_market, tab_stock, tab_alt, tab_bond, tab_saving, tab_portfolio, tab_history = st.tabs([
+    tab_market, tab_chart, tab_stock, tab_alt, tab_bond, tab_saving, tab_portfolio, tab_history = st.tabs([
         "🏪 시장 & 뉴스",
+        "📊 가격 변화 그래프",
         "📈 주식 거래",
         "🥇 금·비트코인",
         "🏛️ 국채",
@@ -1134,6 +1160,49 @@ elif selected_user != "교사 관리자":
                 icon = "🌐" if nrow["news_type"] == "economy" else "📌"
                 with st.expander(f"{icon} [{nrow['sector']}] {nrow['company_name']}"):
                     st.write(nrow["content"])
+
+
+        # ── [탭] 가격 변화 그래프 ────────────────────────────────
+    with tab_chart:
+        st.subheader("📊 자산별 가격 변화 그래프")
+
+        asset_choice_labels = {row["name"]: row["name"] for _, row in companies_df.iterrows()}
+        asset_choice_labels["gold"]    = "🥇 금"
+        asset_choice_labels["bitcoin"] = "₿ 비트코인"
+
+        chosen = st.selectbox(
+            "그래프로 볼 자산을 선택하세요",
+            options=list(asset_choice_labels.keys()),
+            format_func=lambda x: asset_choice_labels[x],
+            key="chart_asset_choice"
+        )
+
+        hist_df = get_price_history(chosen)
+        if hist_df.empty or len(hist_df) < 2:
+            st.info("📌 아직 그래프를 그릴 만큼 가격 이력이 쌓이지 않았어요. 하루가 더 지나면 표시됩니다!")
+        else:
+            hist_df = hist_df.rename(columns={"day": "거래일", "price": "가격(원)"})
+            st.line_chart(hist_df.set_index("거래일"))
+
+            first_price = hist_df["가격(원)"].iloc[0]
+            last_price  = hist_df["가격(원)"].iloc[-1]
+            change_rate = (last_price / first_price - 1) * 100 if first_price else 0
+            cchart1, cchart2, cchart3 = st.columns(3)
+            cchart1.metric("시작 가격", f"{first_price:,.0f}원")
+            cchart2.metric("현재 가격", f"{last_price:,.0f}원")
+            cchart3.metric("전체 변동률", f"{change_rate:+.1f}%")
+
+        st.markdown("---")
+        st.subheader("📈 나의 총자산 변화 그래프")
+
+        my_hist_df = get_student_snapshot_history(student_id)
+        if my_hist_df.empty or len(my_hist_df) < 2:
+            st.info("📌 아직 나의 자산 변화 이력이 부족해요. 하루가 더 지나면 표시됩니다!")
+        else:
+            my_hist_df = my_hist_df.rename(columns={"day": "거래일", "total_value": "총자산(원)"})
+            st.line_chart(my_hist_df.set_index("거래일"))
+            st.caption(f"💡 시작 자산 {INITIAL_CASH:,}원 대비 변화를 한눈에 확인해 보세요!")
+    
 
     # ── [탭2] 주식 거래 ──────────────────────────────────────
     with tab_stock:
