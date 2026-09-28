@@ -833,25 +833,21 @@ if selected_user == "교사 관리자" and st.session_state["teacher_auth"]:
         st.markdown("---")
         st.subheader("📋 전체 거래 내역 및 투자 이유")
 
-        conn = get_connection()
-        all_tx = pd.read_sql(
+                conn = get_connection()
+        cur  = conn.cursor()
+        cur.execute(
             """
             SELECT t.day AS 거래일,
                    t.student_id AS 학생번호,
                    t.asset_type AS 자산유형,
-                   COALESCE(c.name, t.asset_type) AS 자산명,
                    CASE 
-                        WHEN t.asset_type='sticker' THEN '📌 독서 스티커'
-                        WHEN t.asset_type='draw'    THEN '🎯 뽑기 기회'
-                        ELSE COALESCE(c.name, t.asset_type)
+                       WHEN t.asset_type='sticker' THEN '📌 독서 스티커'
+                       WHEN t.asset_type='draw'    THEN '🎯 뽑기 기회'
+                       ELSE COALESCE(c.name, t.asset_type)
                    END AS 자산명,
                    CASE t.tx_type
-                        WHEN 'buy'   THEN '매수/납입'
-                        WHEN 'spend' THEN '🎁 소비'
-                        ELSE '매도/환매'
-                   END AS 거래유형,
-                   CASE t.tx_type
-                       WHEN 'buy' THEN '매수/납입'
+                       WHEN 'buy'   THEN '매수/납입'
+                       WHEN 'spend' THEN '🎁 소비'
                        ELSE '매도/환매'
                    END AS 거래유형,
                    t.quantity AS 수량,
@@ -861,11 +857,14 @@ if selected_user == "교사 관리자" and st.session_state["teacher_auth"]:
             FROM transactions t
             LEFT JOIN companies c ON t.company_id = c.company_id
             ORDER BY t.tx_id DESC
-            """,
-            conn
+            """
         )
+        tx_rows = cur.fetchall()
         conn.close()
 
+        tx_cols = ["거래일","학생번호","자산유형","자산명","거래유형","수량","단가","거래금액","투자이유"]
+        all_tx  = pd.DataFrame(tx_rows, columns=tx_cols) if tx_rows else pd.DataFrame(columns=tx_cols)
+        
         if all_tx.empty:
             st.info("아직 거래 내역이 없습니다.")
         else:
@@ -1623,38 +1622,42 @@ elif selected_user != "교사 관리자":
         rp2.metric("🎯 뽑기 기회",   f"{portfolio_rewards['draw_count']}회")
         
 
-    # ── [탭7] 거래 내역 ──────────────────────────────────────
+    # ── [탭] 거래 내역 ──────────────────────────────────────
     with tab_history:
         st.subheader("📜 나의 전체 거래 내역")
         conn = get_connection()
-        my_tx = pd.read_sql(
-            f"""
+        cur  = conn.cursor()
+        cur.execute(
+            """
             SELECT
                 t.day        AS 거래일,
                 t.asset_type AS 자산유형,
-                COALESCE(c.name, t.asset_type) AS 자산명,
                 CASE 
                     WHEN t.asset_type='sticker' THEN '📌 독서 스티커'
                     WHEN t.asset_type='draw'    THEN '🎯 뽑기 기회'
                     ELSE COALESCE(c.name, t.asset_type)
-                END AS 자산명,
+                END          AS 자산명,
                 CASE t.tx_type
                     WHEN 'buy'   THEN '🟢 매수/납입'
                     WHEN 'spend' THEN '🎁 소비'
                     ELSE '🔴 매도/환매'
-                END AS 거래유형,
+                END          AS 거래유형,
                 t.quantity   AS 수량,
                 t.price      AS 단가,
                 (t.quantity * t.price) AS 거래금액,
                 t.reason     AS 투자이유
             FROM transactions t
             LEFT JOIN companies c ON t.company_id = c.company_id
-            WHERE t.student_id = {student_id}
+            WHERE t.student_id = ?
             ORDER BY t.tx_id DESC
             """,
-            conn
+            (student_id,)
         )
+        my_tx_rows = cur.fetchall()
         conn.close()
+
+        my_tx_cols = ["거래일","자산유형","자산명","거래유형","수량","단가","거래금액","투자이유"]
+        my_tx = pd.DataFrame(my_tx_rows, columns=my_tx_cols) if my_tx_rows else pd.DataFrame(columns=my_tx_cols)
 
         if my_tx.empty:
             st.info("아직 거래 내역이 없습니다.")
