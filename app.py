@@ -833,7 +833,7 @@ if selected_user == "교사 관리자" and st.session_state["teacher_auth"]:
         st.markdown("---")
         st.subheader("📋 전체 거래 내역 및 투자 이유")
 
-                conn = get_connection()
+        conn = get_connection()
         cur  = conn.cursor()
         cur.execute(
             """
