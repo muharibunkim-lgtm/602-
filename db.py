@@ -16,6 +16,8 @@ INITIAL_BOND_RATE      = 0.5
 INITIAL_SAVING_RATE    = 3.0
 INITIAL_SAVING_PERIOD  = 5
 INITIAL_INFLATION_RATE = 0.3
+REWARD_STICKER_PRICE = 300000     # 독서 스티커 1개 교환 가격
+REWARD_DRAW_PRICE    = 1500000    # 뽑기 기회 1회 교환 가격
 
 NUM_STUDENTS     = 23
 INITIAL_CASH     = 1_000_000
@@ -158,6 +160,21 @@ def init_db():
             loss_amount REAL    NOT NULL
         )
     """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS rewards (
+            student_id    INTEGER PRIMARY KEY,
+            sticker_count INTEGER NOT NULL DEFAULT 0,
+            draw_count    INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+
+    # 이미 진행 중인 게임이어도 모든 학생에게 보상 레코드가 존재하도록 보정
+    for i in range(1, NUM_STUDENTS + 1):
+        c.execute(
+            "INSERT OR IGNORE INTO rewards (student_id,sticker_count,draw_count) VALUES (?,0,0)",
+            (i,)
+        )
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS price_history (
@@ -315,6 +332,7 @@ def reset_game(reset_password: bool = False):
         conn.execute("DELETE FROM transactions")
         conn.execute("DELETE FROM news")
         conn.execute("DELETE FROM inflation_log")
+        conn.execute("UPDATE rewards SET sticker_count=0, draw_count=0")
 
         if reset_password:
             conn.execute(
@@ -462,3 +480,68 @@ def get_student_snapshot_history(student_id: int) -> pd.DataFrame:
     rows = cur.fetchall()
     conn.close()
     return pd.DataFrame(rows, columns=["day", "total_value"]) if rows else pd.DataFrame(columns=["day", "total_value"])
+
+
+def get_rewards(student_id: int) -> dict:
+    """학생의 보유 독서 스티커 / 뽑기 기회 개수를 가져옵니다."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT sticker_count, draw_count FROM rewards WHERE student_id=?", (student_id,)
+    ).fetchone()
+    conn.close()
+    if row is None:
+        return {"sticker_count": 0, "draw_count": 0}
+    return {"sticker_count": row["sticker_count"], "draw_count": row["draw_count"]}
+
+
+def spend_on_reward(student_id: int, reward_type: str, price: float, day: int):
+    """
+    reward_type: 'sticker'(독서 스티커) 또는 'draw'(뽑기 기회)
+    소비한 금액은 잔고에서 사라지며, 어떤 자산으로도 전환되지 않습니다.
+    """
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN")
+        cash = float(conn.execute(
+            "SELECT cash FROM students WHERE student_id=?", (student_id,)
+        ).fetchone()["cash"])
+        if cash < price:
+            conn.close()
+            return False, "잔액이 부족합니다."
+
+        # ✅ 소비 금액은 그냥 차감만 됨 (다른 테이블로 옮겨가지 않음)
+        conn.execute("UPDATE students SET cash=cash-? WHERE student_id=?", (price, student_id))
+
+        column = "sticker_count" if reward_type == "sticker" else "draw_count"
+        conn.execute(
+            f"""
+            INSERT INTO rewards (student_id, {column}) VALUES (?, 1)
+            ON CONFLICT(student_id) DO UPDATE SET {column} = {column} + 1
+            """,
+            (student_id,)
+        )
+
+        label = "독서 스티커" if reward_type == "sticker" else "뽑기 기회"
+        conn.execute(
+            "INSERT INTO transactions (student_id,asset_type,tx_type,quantity,price,reason,day) VALUES (?,?,?,?,?,?,?)",
+            (student_id, reward_type, "spend", 1, price, f"{label} 교환 (소비)", day)
+        )
+
+        conn.commit()
+        conn.close()
+        return True, f"🎉 {label}을(를) 획득했어요!"
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return False, str(e)
+
+
+def get_all_rewards() -> pd.DataFrame:
+    """전체 학생의 보유 스티커/뽑기 현황을 가져옵니다."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT student_id, sticker_count, draw_count FROM rewards ORDER BY student_id")
+    rows = cur.fetchall()
+    conn.close()
+    cols = ["student_id", "sticker_count", "draw_count"]
+    return pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
