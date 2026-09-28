@@ -22,6 +22,11 @@ from db import (
     INITIAL_CASH,
     INITIAL_GOLD_PRICE,
     INITIAL_BTC_PRICE,
+    get_rewards, 
+    spend_on_reward, 
+    get_all_rewards,
+    REWARD_STICKER_PRICE, 
+    REWARD_DRAW_PRICE,
 )
 
 st.set_page_config(
@@ -789,6 +794,7 @@ if selected_user == "교사 관리자" and st.session_state["teacher_auth"]:
         rank_data = []
         for sid in range(1, NUM_STUDENTS + 1):
             a = calc_total_assets(sid)
+            r = get_rewards(sid)
             rank_data.append({
                 "학생":        f"{sid}번",
                 "현금(원)":    int(a["cash"]),
@@ -799,6 +805,8 @@ if selected_user == "교사 관리자" and st.session_state["teacher_auth"]:
                 "총자산(원)":  int(a["total"]),
                 "수익률(%)":   round(a["profit_rate"], 2),
                 "인플손실(원)": int(a["cumulative_loss"]),
+                "📌스티커":    r["sticker_count"],
+                "🎯뽑기":      r["draw_count"],
             })
 
         rank_df = (
@@ -832,6 +840,16 @@ if selected_user == "교사 관리자" and st.session_state["teacher_auth"]:
                    t.student_id AS 학생번호,
                    t.asset_type AS 자산유형,
                    COALESCE(c.name, t.asset_type) AS 자산명,
+                   CASE 
+                        WHEN t.asset_type='sticker' THEN '📌 독서 스티커'
+                        WHEN t.asset_type='draw'    THEN '🎯 뽑기 기회'
+                        ELSE COALESCE(c.name, t.asset_type)
+                   END AS 자산명,
+                   CASE t.tx_type
+                        WHEN 'buy'   THEN '매수/납입'
+                        WHEN 'spend' THEN '🎁 소비'
+                        ELSE '매도/환매'
+                   END AS 거래유형,
                    CASE t.tx_type
                        WHEN 'buy' THEN '매수/납입'
                        ELSE '매도/환매'
@@ -1102,13 +1120,14 @@ elif selected_user != "교사 관리자":
 
     st.markdown("---")
 
-    tab_market, tab_chart, tab_stock, tab_alt, tab_bond, tab_saving, tab_portfolio, tab_history = st.tabs([
+    tab_market, tab_chart, tab_stock, tab_alt, tab_bond, tab_saving, tab_consume, tab_portfolio, tab_history = st.tabs([
         "🏪 시장 & 뉴스",
         "📊 가격 변화 그래프",
         "📈 주식 거래",
         "🥇 금·비트코인",
         "🏛️ 국채",
         "🏦 적금",
+        "🎁 소비",
         "📂 내 포트폴리오",
         "📜 거래 내역",
     ])
@@ -1491,6 +1510,55 @@ elif selected_user != "교사 관리자":
                 f"({day + saving_period}일차에 {int(saving_amount * (1 + saving_rate/100)):,}원 수령)"
             ) 
 
+# ── [탭] 소비 ────────────────────────────────────────────
+    with tab_consume:
+        st.subheader("🎁 소비하기 — 독서 스티커 & 뽑기 기회")
+        st.info(
+            "💡 모은 돈을 저축하고 투자하는 것도 좋지만, 가끔은 그동안의 노력을 "
+            "보상으로 바꾸는 것도 좋은 경험이에요.\n\n"
+            "⚠️ 한 번 소비한 돈은 다시 돌려받을 수 없어요. 신중하게 결정해 보세요!"
+        )
+
+        my_rewards = get_rewards(student_id)
+        rc1, rc2 = st.columns(2)
+        rc1.metric("📌 보유 독서 스티커", f"{my_rewards['sticker_count']}개")
+        rc2.metric("🎯 보유 뽑기 기회",   f"{my_rewards['draw_count']}회")
+
+        st.markdown("---")
+        cons_col1, cons_col2 = st.columns(2)
+
+        with cons_col1:
+            st.markdown("### 📌 독서 스티커 교환")
+            st.markdown(f"**가격: {REWARD_STICKER_PRICE:,}원**")
+            st.caption("독서 활동판에 붙일 수 있는 스티커 1개를 얻어요.")
+            if assets["cash"] < REWARD_STICKER_PRICE:
+                st.error(f"잔액 부족! (보유 현금: {int(assets['cash']):,}원)")
+            if st.button(
+                "✅ 스티커로 교환하기", type="primary",
+                disabled=assets["cash"] < REWARD_STICKER_PRICE,
+                key="btn_buy_sticker"
+            ):
+                ok, msg = spend_on_reward(student_id, "sticker", REWARD_STICKER_PRICE, day)
+                st.success(msg) if ok else st.error(msg)
+                if ok: st.rerun()
+
+        with cons_col2:
+            st.markdown("### 🎯 뽑기 기회 교환")
+            st.markdown(f"**가격: {REWARD_DRAW_PRICE:,}원**")
+            st.caption("뽑기판에서 한 번 뽑을 수 있는 기회 1회를 얻어요.")
+            if assets["cash"] < REWARD_DRAW_PRICE:
+                st.error(f"잔액 부족! (보유 현금: {int(assets['cash']):,}원)")
+            if st.button(
+                "✅ 뽑기 기회로 교환하기", type="primary",
+                disabled=assets["cash"] < REWARD_DRAW_PRICE,
+                key="btn_buy_draw"
+            ):
+                ok, msg = spend_on_reward(student_id, "draw", REWARD_DRAW_PRICE, day)
+                st.success(msg) if ok else st.error(msg)
+                if ok: st.rerun()
+
+    
+
     # ── [탭6] 내 포트폴리오 ──────────────────────────────────
     with tab_portfolio:
         st.subheader("📂 내 전체 포트폴리오")
@@ -1547,6 +1615,13 @@ elif selected_user != "교사 관리자":
         p1.metric("🏦 총 자산",           f"{int(assets['total']):,}원")
         p2.metric("📈 수익률",             f"{assets['profit_rate']:+.2f}%")
         p3.metric("📉 인플레이션 누적 손실", f"{int(assets['cumulative_loss']):,}원")
+        st.markdown("---")
+        st.subheader("🎁 나의 보상 현황")
+        portfolio_rewards = get_rewards(student_id)
+        rp1, rp2 = st.columns(2)
+        rp1.metric("📌 독서 스티커", f"{portfolio_rewards['sticker_count']}개")
+        rp2.metric("🎯 뽑기 기회",   f"{portfolio_rewards['draw_count']}회")
+        
 
     # ── [탭7] 거래 내역 ──────────────────────────────────────
     with tab_history:
@@ -1558,10 +1633,16 @@ elif selected_user != "교사 관리자":
                 t.day        AS 거래일,
                 t.asset_type AS 자산유형,
                 COALESCE(c.name, t.asset_type) AS 자산명,
+                CASE 
+                    WHEN t.asset_type='sticker' THEN '📌 독서 스티커'
+                    WHEN t.asset_type='draw'    THEN '🎯 뽑기 기회'
+                    ELSE COALESCE(c.name, t.asset_type)
+                END AS 자산명,
                 CASE t.tx_type
-                    WHEN 'buy' THEN '🟢 매수/납입'
-                    ELSE            '🔴 매도/환매'
-                END          AS 거래유형,
+                    WHEN 'buy'   THEN '🟢 매수/납입'
+                    WHEN 'spend' THEN '🎁 소비'
+                    ELSE '🔴 매도/환매'
+                END AS 거래유형,
                 t.quantity   AS 수량,
                 t.price      AS 단가,
                 (t.quantity * t.price) AS 거래금액,
