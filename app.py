@@ -35,6 +35,7 @@ st.set_page_config(
     layout="wide",
 )
 init_db()
+cleanup_dust_holdings()
 
 TEACHER_PASSWORD = "a1111"
 
