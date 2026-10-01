@@ -282,8 +282,12 @@ def sell_stock(student_id, company_id, quantity, price, reason, day):
 
 
 def buy_alt_asset(student_id, asset_type, quantity, price, reason, day):
+    # ✅ 비트코인은 소수점 6자리, 금은 소수점 2자리까지만 반올림하여 오차를 방지
+    decimals = 6 if asset_type == "bitcoin" else 2
+    quantity = round(quantity, decimals)
     total = quantity * price
-    conn  = get_connection()
+
+    conn = get_connection()
     try:
         conn.execute("BEGIN")
         cash = float(conn.execute(
@@ -292,16 +296,22 @@ def buy_alt_asset(student_id, asset_type, quantity, price, reason, day):
         if cash < total:
             conn.close()
             return False, "잔액이 부족합니다."
-        conn.execute(
-            "UPDATE students SET cash=cash-? WHERE student_id=?",
-            (total, student_id)
-        )
+
+        conn.execute("UPDATE students SET cash=cash-? WHERE student_id=?", (total, student_id))
+
+        row = conn.execute(
+            "SELECT quantity FROM alt_holdings WHERE student_id=? AND asset_type=?",
+            (student_id, asset_type)
+        ).fetchone()
+        current_qty = float(row["quantity"]) if row else 0.0
+        new_qty = round(current_qty + quantity, decimals)
+
         conn.execute(
             """
             INSERT INTO alt_holdings (student_id,asset_type,quantity) VALUES (?,?,?)
-            ON CONFLICT(student_id,asset_type) DO UPDATE SET quantity=quantity+?
+            ON CONFLICT(student_id,asset_type) DO UPDATE SET quantity=?
             """,
-            (student_id, asset_type, quantity, quantity)
+            (student_id, asset_type, new_qty, new_qty)
         )
         conn.execute(
             "INSERT INTO transactions (student_id,asset_type,tx_type,quantity,price,reason,day) VALUES (?,?,?,?,?,?,?)",
@@ -311,31 +321,39 @@ def buy_alt_asset(student_id, asset_type, quantity, price, reason, day):
         conn.close()
         return True, "매수 완료!"
     except Exception as e:
-        conn.rollback()
-        conn.close()
+        conn.rollback(); conn.close()
         return False, str(e)
 
 
 def sell_alt_asset(student_id, asset_type, quantity, price, reason, day):
+    decimals = 6 if asset_type == "bitcoin" else 2
+    quantity = round(quantity, decimals)
     total = quantity * price
-    conn  = get_connection()
+
+    conn = get_connection()
     try:
         conn.execute("BEGIN")
         row = conn.execute(
             "SELECT quantity FROM alt_holdings WHERE student_id=? AND asset_type=?",
             (student_id, asset_type)
         ).fetchone()
-        if row is None or float(row[0]) < quantity:
+        current_qty = round(float(row["quantity"]), decimals) if row else 0.0
+
+        # ✅ 아주 미세한 오차(1e-9 이하)는 "같다"고 처리해서 매도 가능하게 함
+        if current_qty < quantity - 1e-9:
             conn.close()
             return False, "보유량이 부족합니다."
+
+        new_qty = round(current_qty - quantity, decimals)
+        # ✅ 더스트 정리: 남은 양이 최소 단위보다 작으면 그냥 0으로 처리
+        if new_qty < 10 ** (-decimals):
+            new_qty = 0.0
+
         conn.execute(
-            "UPDATE alt_holdings SET quantity=quantity-? WHERE student_id=? AND asset_type=?",
-            (quantity, student_id, asset_type)
+            "UPDATE alt_holdings SET quantity=? WHERE student_id=? AND asset_type=?",
+            (new_qty, student_id, asset_type)
         )
-        conn.execute(
-            "UPDATE students SET cash=cash+? WHERE student_id=?",
-            (total, student_id)
-        )
+        conn.execute("UPDATE students SET cash=cash+? WHERE student_id=?", (total, student_id))
         conn.execute(
             "INSERT INTO transactions (student_id,asset_type,tx_type,quantity,price,reason,day) VALUES (?,?,?,?,?,?,?)",
             (student_id, asset_type, "sell", quantity, price, reason, day)
@@ -344,12 +362,12 @@ def sell_alt_asset(student_id, asset_type, quantity, price, reason, day):
         conn.close()
         return True, "매도 완료!"
     except Exception as e:
-        conn.rollback()
-        conn.close()
+        conn.rollback(); conn.close()
         return False, str(e)
 
 
 def buy_bond(student_id, amount, reason, day):
+    amount = round(amount)   # 원 단위는 소수점 없이 정수로 통일
     conn = get_connection()
     try:
         conn.execute("BEGIN")
@@ -359,16 +377,20 @@ def buy_bond(student_id, amount, reason, day):
         if cash < amount:
             conn.close()
             return False, "잔액이 부족합니다."
-        conn.execute(
-            "UPDATE students SET cash=cash-? WHERE student_id=?",
-            (amount, student_id)
-        )
+        conn.execute("UPDATE students SET cash=cash-? WHERE student_id=?", (amount, student_id))
+
+        row = conn.execute(
+            "SELECT amount FROM bond_holdings WHERE student_id=?", (student_id,)
+        ).fetchone()
+        current = float(row["amount"]) if row else 0.0
+        new_amount = round(current + amount)
+
         conn.execute(
             """
             INSERT INTO bond_holdings (student_id,amount) VALUES (?,?)
-            ON CONFLICT(student_id) DO UPDATE SET amount=amount+?
+            ON CONFLICT(student_id) DO UPDATE SET amount=?
             """,
-            (student_id, amount, amount)
+            (student_id, new_amount, new_amount)
         )
         conn.execute(
             "INSERT INTO transactions (student_id,asset_type,tx_type,quantity,price,reason,day) VALUES (?,?,?,?,?,?,?)",
@@ -378,29 +400,33 @@ def buy_bond(student_id, amount, reason, day):
         conn.close()
         return True, "국채 매수 완료!"
     except Exception as e:
-        conn.rollback()
-        conn.close()
+        conn.rollback(); conn.close()
         return False, str(e)
 
 
 def sell_bond(student_id, amount, reason, day):
+    amount = round(amount)
     conn = get_connection()
     try:
         conn.execute("BEGIN")
         row = conn.execute(
             "SELECT amount FROM bond_holdings WHERE student_id=?", (student_id,)
         ).fetchone()
-        if row is None or float(row[0]) < amount:
+        current = round(float(row["amount"]), 0) if row else 0.0
+
+        if current < amount - 1:   # 1원 미만 오차는 허용
             conn.close()
             return False, "보유 국채 금액이 부족합니다."
+
+        new_amount = round(current - amount)
+        if new_amount < 1:
+            new_amount = 0
+
         conn.execute(
-            "UPDATE bond_holdings SET amount=amount-? WHERE student_id=?",
-            (amount, student_id)
+            "UPDATE bond_holdings SET amount=? WHERE student_id=?",
+            (new_amount, student_id)
         )
-        conn.execute(
-            "UPDATE students SET cash=cash+? WHERE student_id=?",
-            (amount, student_id)
-        )
+        conn.execute("UPDATE students SET cash=cash+? WHERE student_id=?", (amount, student_id))
         conn.execute(
             "INSERT INTO transactions (student_id,asset_type,tx_type,quantity,price,reason,day) VALUES (?,?,?,?,?,?,?)",
             (student_id, "bond", "sell", amount, 1, reason, day)
@@ -409,10 +435,9 @@ def sell_bond(student_id, amount, reason, day):
         conn.close()
         return True, "국채 환매 완료!"
     except Exception as e:
-        conn.rollback()
-        conn.close()
+        conn.rollback(); conn.close()
         return False, str(e)
-
+        
 
 def deposit_saving(student_id, amount, rate, start_day, end_day, reason, day):
     conn = get_connection()
@@ -1267,24 +1292,26 @@ elif selected_user != "교사 관리자":
                 sell_h  = sh_df[sh_df["name"] == sell_cn].iloc[0]
                 sell_price = int(sell_h["current_price"])
                 max_qty    = int(sell_h["quantity"])
-                st.markdown(f"**현재가:** {sell_price:,}원 | **보유:** {max_qty}주")
 
-                sell_qty = st.number_input("수량(주)", 1, max_qty, 1, 1, key="sell_qty")
-                st.markdown(f"**총 금액:** {sell_qty * sell_price:,}원")
-
-                sell_reason = st.text_area(
-                    "✏️ 매도 이유 (필수)",
-                    placeholder="예) 주가가 충분히 올라서 지금 파는 게 좋을 것 같아요.",
-                    height=90, key="sell_reason"
-                )
-                sell_disabled = sell_reason.strip() == ""
-                if st.button("✅ 매도", type="primary", disabled=sell_disabled, key="btn_sell"):
-                    ok, msg = sell_stock(
-                        student_id, int(sell_h["company_id"]),
-                        sell_qty, sell_price, sell_reason.strip(), day
+                if max_qty < 1:
+                    st.info("매도 가능한 수량이 없어요.")
+                else:
+                    st.markdown(f"**현재가:** {sell_price:,}원 | **보유:** {max_qty}주")
+                    sell_qty = st.number_input("수량(주)", 1, max_qty, 1, 1, key="sell_qty")
+                    st.markdown(f"**총 금액:** {sell_qty * sell_price:,}원")
+                    sell_reason = st.text_area(
+                        "✏️ 매도 이유 (필수)",
+                        placeholder="예) 주가가 충분히 올라서 지금 파는 게 좋을 것 같아요.",
+                        height=90, key="sell_reason"
                     )
-                    st.success(f"🎉 {sell_cn} {sell_qty}주 매도 완료!") if ok else st.error(msg)
-                    if ok: st.rerun()
+                    sell_disabled = sell_reason.strip() == ""
+                    if st.button("✅ 매도", type="primary", disabled=sell_disabled, key="btn_sell"):
+                        ok, msg = sell_stock(
+                            student_id, int(sell_h["company_id"]),
+                            sell_qty, sell_price, sell_reason.strip(), day
+                        )
+                        st.success(f"🎉 {sell_cn} {sell_qty}주 매도 완료!") if ok else st.error(msg)
+                        if ok: st.rerun()
 
     # ── [탭3] 금·비트코인 거래 ───────────────────────────────
     with tab_alt:
@@ -1358,37 +1385,49 @@ elif selected_user != "교사 관리자":
                 alt_sell_h     = alt_h_df[alt_h_df["asset_type"] == alt_sell_type].iloc[0]
                 alt_sell_price = float(alt_sell_h["current_price"])
                 alt_max_qty    = float(alt_sell_h["quantity"])
-                st.markdown(
-                    f"**현재가:** {alt_sell_price:,.0f}원/{alt_sell_h['unit']} "
-                    f"| **보유:** {alt_max_qty}"
-                )
 
-                if alt_sell_type == "bitcoin":
-                    alt_sell_qty = st.number_input(
-                        "수량(BTC)", 0.0001, float(alt_max_qty), 0.0001, 0.0001,
-                        format="%.4f", key="alt_sell_qty"
+                # ✅ 최소 거래 단위보다 보유량이 적으면 매도 UI 자체를 띄우지 않음
+                min_required = 0.0001 if alt_sell_type == "bitcoin" else 1.0
+
+                if alt_max_qty < min_required:
+                    st.info(
+                        f"보유량이 너무 적어 매도할 수 없어요. "
+                        f"(현재 보유: {alt_max_qty:.6f})"
                     )
                 else:
-                    alt_sell_qty = st.number_input(
-                        "수량(g)", 1.0, float(alt_max_qty), 1.0, 1.0,
-                        format="%.1f", key="alt_sell_qty"
+                    st.markdown(
+                        f"**현재가:** {alt_sell_price:,.0f}원/{alt_sell_h['unit']} "
+                        f"| **보유:** {alt_max_qty}"
                     )
 
-                st.markdown(f"**총 금액:** {alt_sell_qty * alt_sell_price:,.0f}원")
-                alt_sell_reason = st.text_area(
-                    "✏️ 매도 이유 (필수)",
-                    placeholder="예) 금 가격이 많이 올라서 지금 팔면 좋을 것 같아요.",
-                    height=90, key="alt_sell_reason"
-                )
-                alt_sell_disabled = alt_sell_reason.strip() == ""
-                if st.button("✅ 매도", type="primary", disabled=alt_sell_disabled, key="btn_alt_sell"):
-                    ok, msg = sell_alt_asset(
-                        student_id, alt_sell_type,
-                        alt_sell_qty, alt_sell_price,
-                        alt_sell_reason.strip(), day
+                    if alt_sell_type == "bitcoin":
+                        alt_sell_qty = st.number_input(
+                            "수량(BTC)", 0.0001, alt_max_qty, 0.0001, 0.0001,
+                            format="%.4f", key="alt_sell_qty"
+                        )
+                    else:
+                        alt_sell_qty = st.number_input(
+                            "수량(g)", 1.0, alt_max_qty, 1.0, 1.0,
+                            format="%.1f", key="alt_sell_qty"
+                        )
+
+                    st.markdown(f"**총 금액:** {alt_sell_qty * alt_sell_price:,.0f}원")
+                    alt_sell_reason = st.text_area(
+                        "✏️ 매도 이유 (필수)",
+                        placeholder="예) 금 가격이 많이 올라서 지금 팔면 좋을 것 같아요.",
+                        height=90, key="alt_sell_reason"
                     )
-                    st.success("🎉 매도 완료!") if ok else st.error(msg)
-                    if ok: st.rerun()
+                    alt_sell_disabled = alt_sell_reason.strip() == ""
+                    if st.button("✅ 매도", type="primary", disabled=alt_sell_disabled, key="btn_alt_sell"):
+                        ok, msg = sell_alt_asset(
+                            student_id, alt_sell_type,
+                            alt_sell_qty, alt_sell_price,
+                            alt_sell_reason.strip(), day
+                        )
+                        st.success("🎉 매도 완료!") if ok else st.error(msg)
+                        if ok: st.rerun()
+
+    
 
     # ── [탭4] 국채 ───────────────────────────────────────────
     with tab_bond:
@@ -1431,8 +1470,8 @@ elif selected_user != "교사 관리자":
 
         with bond_col_sell:
             st.markdown("### 🔴 국채 환매")
-            if bond_amount <= 0:
-                st.info("보유 중인 국채가 없습니다.")
+            if bond_amount < 10000:
+                st.info(f"환매 가능한 국채 금액이 부족해요. (현재 보유: {int(bond_amount):,}원)")
             else:
                 bond_sell_amount = st.number_input(
                     "환매 금액(원)", 10000, int(bond_amount), 10000, 10000, key="bond_sell_amount"
@@ -1449,6 +1488,8 @@ elif selected_user != "교사 관리자":
                     )
                     st.success(f"🎉 국채 {bond_sell_amount:,}원 환매 완료!") if ok else st.error(msg)
                     if ok: st.rerun()
+
+    
 
     # ── [탭5] 적금 ───────────────────────────────────────────
     with tab_saving:
