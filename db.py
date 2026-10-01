@@ -545,3 +545,19 @@ def get_all_rewards() -> pd.DataFrame:
     conn.close()
     cols = ["student_id", "sticker_count", "draw_count"]
     return pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
+
+
+def cleanup_dust_holdings():
+    """과거 거래로 생긴 미세한 소수점 오차(더스트)를 0으로 정리합니다."""
+    conn = get_connection()
+    conn.execute(
+        "UPDATE alt_holdings SET quantity=0 WHERE asset_type='bitcoin' AND quantity > 0 AND quantity < 0.000001"
+    )
+    conn.execute(
+        "UPDATE alt_holdings SET quantity=0 WHERE asset_type='gold' AND quantity > 0 AND quantity < 0.01"
+    )
+    conn.execute(
+        "UPDATE bond_holdings SET amount=0 WHERE amount > 0 AND amount < 1"
+    )
+    conn.commit()
+    conn.close()
