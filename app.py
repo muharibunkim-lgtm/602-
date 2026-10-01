@@ -27,6 +27,7 @@ from db import (
     get_all_rewards,
     REWARD_STICKER_PRICE, 
     REWARD_DRAW_PRICE,
+    cleanup_dust_holdings,
 )
 
 st.set_page_config(
